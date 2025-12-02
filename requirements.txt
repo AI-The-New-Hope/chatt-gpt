@@ -1,0 +1,4 @@
+# Core OpenAI SDK for API access
+openai>=2.8.1
+# Agents SDK that provides Agent, Runner, SQLiteSession, HostedMCPTool, WebSearchTool
+openai-agents>=0.1.0
