@@ -1,0 +1,1 @@
+I'd like to create a simple Python script that will implement simple endless while loop over `openai-agents` agent that imitate ChatGPT experience in terminal. Fetch the latest documentation using context7 tool, I have just installed the `openai-agents` on the version 0.6.1 into `.venv` environment.
