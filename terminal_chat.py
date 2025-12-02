@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Terminal-friendly OpenAI Agents SDK chat loop with Context7 and web search tools."""
+"""Terminal-friendly OpenAI Agents SDK chat loop with optional web search."""
 from __future__ import annotations
 
 import argparse
 import os
 import sys
-from typing import Optional
 
-from agents import Agent, HostedMCPTool, Runner, SQLiteSession, WebSearchTool
+from agents import Agent, ModelSettings, Runner, SQLiteSession, WebSearchTool
 from agents.exceptions import AgentsException
+from openai.types.shared import Reasoning
 
-DEFAULT_MODEL = os.getenv("OPENAI_AGENT_MODEL", "gpt-4.1-mini")
-DEFAULT_CONTEXT7_URL = os.getenv("CONTEXT7_URL", "https://mcp.context7.com/mcp")
+DEFAULT_MODEL = os.getenv("OPENAI_AGENT_MODEL", "gpt-5.1")
 DEFAULT_SESSION_ID = "terminal-chat"
 DEFAULT_DB_PATH = "chat_history.sqlite"
 
@@ -19,8 +18,8 @@ DEFAULT_DB_PATH = "chat_history.sqlite"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Chat with OpenAI's hosted models via the Agents SDK while giving them "
-            "Context7 MCP documentation tools and the built-in WebSearchTool."
+            "Chat with OpenAI's hosted models via the Agents SDK, optionally letting them "
+            "call the built-in web search tool for fresh information."
         )
     )
     parser.add_argument(
@@ -45,62 +44,51 @@ def parse_args() -> argparse.Namespace:
         help="Safety cap for tool/LLM turns per user message (default: %(default)s)",
     )
     parser.add_argument(
-        "--context7-label",
-        default=os.getenv("CONTEXT7_LABEL", "context7"),
-        help="Label shown to the model for the Context7 MCP server (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--context7-url",
-        default=DEFAULT_CONTEXT7_URL,
-        help="Public MCP endpoint for Context7 (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--context7-approval",
-        default=os.getenv("CONTEXT7_APPROVAL_POLICY", "never"),
-        choices=["never", "always"],
-        help="When to require manual approval before running Context7 tools",
-    )
-    parser.add_argument(
         "--require-websearch",
         action="store_true",
-        help="Force the agent to always reach for tools when answering (sets tool_choice)",
+        help="Force the agent to invoke the web search tool each turn (tool_choice=required)",
     )
     return parser.parse_args()
 
 
-def build_context7_tool(args: argparse.Namespace) -> HostedMCPTool:
-    headers = {}
-    api_key = os.getenv("CONTEXT7_API_KEY")
-    if api_key:
-        headers["CONTEXT7_API_KEY"] = api_key
-
-    tool_config = {
-        "type": "mcp",
-        "server_label": args.context7_label,
-        "server_url": args.context7_url,
-        "require_approval": args.context7_approval,
-    }
-    if headers:
-        tool_config["headers"] = headers
-
-    return HostedMCPTool(tool_config=tool_config)
-
-
-def build_agent(args: argparse.Namespace) -> Agent:
-    tools = [WebSearchTool(), build_context7_tool(args)]
+def build_agent(args: argparse.Namespace, thinking_mode: bool) -> Agent:
+    tools = [WebSearchTool()]
+    instructions = (
+        "You are ChatGPT running inside a terminal. Provide clear, self-contained "
+        "answers and use the WebSearch tool for time-sensitive or factual queries."
+    )
+    if thinking_mode:
+        instructions += (
+            " Reflect deeply before replying: write out your reasoning invisibly as a "
+            "scratchpad and then produce a clean final answer."
+        )
     agent_kwargs: dict[str, object] = {
         "name": "TerminalChatGPT",
-        "instructions": (
-            "You are a concise AI assistant that cites live sources when appropriate. "
-            "Use the web search tool for current events and defer to the Context7 MCP "
-            "tools for fresh API and library docs before you improvise."
-        ),
+        "instructions": instructions,
         "model": args.model,
         "tools": tools,
     }
+    ms_kwargs: dict[str, object] = {}
     if args.require_websearch:
-        agent_kwargs["model_settings"] = {"tool_choice": "required"}
+        ms_kwargs["tool_choice"] = "required"
+    if thinking_mode:
+        ms_kwargs["reasoning"] = Reasoning(effort="medium")
+    if ms_kwargs:
+        agent_kwargs["model_settings"] = ModelSettings(**ms_kwargs)
     return Agent(**agent_kwargs)
+
+
+def prompt_for_thinking_mode() -> bool:
+    """Ask the operator whether the session should enable 'thinking' assists."""
+    while True:
+        answer = input("Enable enhanced thinking mode? [y/N]: ").strip().lower()
+        if not answer:
+            return False
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"n", "no"}:
+            return False
+        print("Please answer 'y' or 'n'.")
 
 
 def main() -> None:
@@ -109,12 +97,15 @@ def main() -> None:
         sys.exit(1)
 
     args = parse_args()
-    agent = build_agent(args)
+    thinking_mode = prompt_for_thinking_mode()
+    agent = build_agent(args, thinking_mode)
     session = SQLiteSession(args.session_id, db_path=args.db_path)
 
+    thinking_msg = "ON" if thinking_mode else "off"
     print(
-        "Chatting with model", args.model,
-        "— Context7 + web search tools enabled. Press Ctrl+C to exit.",
+        "Chatting with model",
+        args.model,
+        f"— web search tool available. Thinking mode {thinking_msg}. Press Ctrl+C to exit.",
     )
 
     while True:
